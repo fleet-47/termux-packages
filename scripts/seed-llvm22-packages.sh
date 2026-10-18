@@ -9,7 +9,8 @@ for deb in upstream-llvm22/debs/*.deb; do
     architecture=$(dpkg-deb -f "$deb" Architecture)
     test "$version" = 22.1.8
     test "$architecture" = aarch64
-    dpkg-deb -x "$deb" /
+    # Match termux_step_get_dependencies: avoid modifying root directory metadata.
+    ar p "$deb" data.tar.xz | tar xJ --no-overwrite-dir --transform='s#^.$#data#' -C /
     cp "$deb" "$HOME/.termux-build/_cache-aarch64/"
     printf '%s\n' "$version" > "/data/data/.built-packages/$package"
 done

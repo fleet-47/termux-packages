@@ -1,0 +1,33 @@
+--- a/src/bootstrap/src/core/android.rs
++++ b/src/bootstrap/src/core/android.rs
+@@ -10,7 +10,7 @@
+ }
+ 
+ pub(crate) fn discover_android(builder: &Builder<'_>, target: TargetSelection) -> Option<Android> {
+-    if !target.contains("android") {
++    if !target.contains("android") || target == builder.config.build {
+         return None;
+     }
+ 
+--- a/src/bootstrap/src/core/session.rs
++++ b/src/bootstrap/src/core/session.rs
+@@ -1235,7 +1235,7 @@
+     /// and `remote-test-server` binaries.
+     pub(crate) fn remote_tested(&self, target: TargetSelection) -> bool {
+         self.qemu_rootfs(target).is_some()
+-            || target.contains("android")
++            || (target.contains("android") && target != self.config.build)
+             || env::var_os("TEST_DEVICE_ADDR").is_some()
+     }
+ 
+--- a/src/tools/compiletest/src/runtest.rs
++++ b/src/tools/compiletest/src/runtest.rs
+@@ -121,7 +121,7 @@
+         | "armv7-linux-androideabi"
+         | "thumbv7neon-linux-androideabi"
+         | "aarch64-linux-android" => {
+-            if !config.adb_device_status {
++            if config.host != config.target && !config.adb_device_status {
+                 panic!("android device not available");
+             }
+         }

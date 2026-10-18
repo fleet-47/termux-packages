@@ -1,0 +1,25 @@
+--- a/clang/lib/Driver/ToolChains/Linux.cpp
++++ b/clang/lib/Driver/ToolChains/Linux.cpp
+@@ -365,7 +365,8 @@
+   }
+ 
+   addPathIfExists(D, concat(SysRoot, "/usr/lib", MultiarchTriple), Paths);
+-  addPathIfExists(D, concat(SysRoot, "/usr", OSLibDir), Paths);
++  if (!IsAndroid)
++    addPathIfExists(D, concat(SysRoot, "/usr", OSLibDir), Paths);
+   if (IsRISCV) {
+     StringRef ABIName = tools::riscv::getRISCVABI(Args, Triple);
+     addPathIfExists(D, concat(SysRoot, "/", OSLibDir, ABIName), Paths);
+@@ -376,6 +377,12 @@
+ 
+   addPathIfExists(D, concat(SysRoot, "/lib"), Paths);
+   addPathIfExists(D, concat(SysRoot, "/usr/lib"), Paths);
++  if (IsAndroid) {
++    addPathIfExists(D, concat("/system/", OSLibDir), Paths);
++    if (Args.hasFlag(options::OPT_ftermux_rpath,
++                     options::OPT_fno_termux_rpath, true))
++      ExtraOpts.push_back("-rpath=" + SysRoot + "/usr/lib");
++  }
+ }
+ 
+ ToolChain::RuntimeLibType Linux::GetDefaultRuntimeLibType() const {

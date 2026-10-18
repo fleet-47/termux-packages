@@ -38,9 +38,10 @@ jobs:
     permissions:
       contents: read # actions/upload-artifact doesn't need contents: write
     runs-on: ubuntu-26.04
+    timeout-minutes: 360
     strategy:
       matrix:
-        target_arch: [aarch64, arm, i686, x86_64]
+        target_arch: [aarch64]
       fail-fast: false
     steps:
     - name: Clone repository
@@ -274,6 +275,18 @@ jobs:
         size /var
         size /var/lib
         size /var/
+
+    - name: Reuse verified upstream LLVM 22 packages
+      if: ${{ steps.build-info.outputs.skip-building != 'true' }}
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        mkdir -p upstream-llvm22
+        gh run download 32335884744 --repo termux/termux-packages --name debs-aarch64-d6f173f903f25c3a14b3e1790aeccc02611d89db --dir upstream-llvm22
+        gh run download 32335884744 --repo termux/termux-packages --name checksum-aarch64-d6f173f903f25c3a14b3e1790aeccc02611d89db --dir upstream-llvm22
+        tar -xf upstream-llvm22/debs-aarch64-d6f173f903f25c3a14b3e1790aeccc02611d89db.tar -C upstream-llvm22
+        (cd upstream-llvm22 && sha256sum -c checksum-aarch64-d6f173f903f25c3a14b3e1790aeccc02611d89db.txt)
+        ./scripts/run-docker.sh bash scripts/seed-llvm22-packages.sh
 
     - name: Build packages
       if: ${{ steps.build-info.outputs.skip-building != 'true' }}

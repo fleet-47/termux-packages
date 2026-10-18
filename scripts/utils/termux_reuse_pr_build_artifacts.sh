@@ -38,7 +38,7 @@ ci_artifact_url() {
 	curl --silent \
 		-H "Authorization: token ${GITHUB_TOKEN}" \
 		-H "Accept: application/vnd.github.v3+json" \
-		"https://api.github.com/repos/termux/termux-packages/actions/runs/${1}/artifacts" \
+		"https://api.github.com/repos/fleet-47/termux-packages/actions/runs/${1}/artifacts" \
 		| jq -r '[.artifacts[]? | select(.name | startswith("debs-'"${TARGET_ARCH}"'")) | .archive_download_url][0] // error' \
 	|| return $?
 }
@@ -92,7 +92,7 @@ readarray -t COMMITS < <(git rev-list --no-merges "$OLD_COMMIT..$HEAD_COMMIT" ||
 	# We should obtain data about all commits in this push to check that they are from the same PR if any
 	RELATED_PRS_QUERY="
 	query {
-		repository(owner: \"termux\", name: \"termux-packages\") {
+		repository(owner: \"fleet-47\", name: \"termux-packages\") {
 		$(
 			for commit in "${COMMITS[@]}"; do
 				# Add a query for this commit with the shorthash as the label
@@ -124,7 +124,7 @@ readarray -t COMMITS < <(git rev-list --no-merges "$OLD_COMMIT..$HEAD_COMMIT" ||
 			 .edges[0].node.body)' <<< "$RESPONSE" || :)
 	[[ -n "${PR_HEAD_COMMIT:-}" ]] || infoexit "failed to read associated PR head commit, not performing CI fast path"
 
-	echo "::group::Detected PR #${PRS[0]}: ${PR_COMMIT_TITLE} — https://github.com/termux/termux-packages/pull/${PRS[0]}"
+	echo "::group::Detected PR #${PRS[0]}: ${PR_COMMIT_TITLE} — https://github.com/fleet-47/termux-packages/pull/${PRS[0]}"
 	echo "${PR_COMMIT_BODY}"
 	echo "::endgroup::"
 
@@ -139,7 +139,7 @@ readarray -t COMMITS < <(git rev-list --no-merges "$OLD_COMMIT..$HEAD_COMMIT" ||
 		(( PR_CI_REUSE )) && echo "PR description contains [ci reuse]"
 	fi
 
-	DIRS_REGEX="$(paste -sd'|' <<< "${TERMUX_PACKAGE_DIRECTORIES[@]}")" || exit 0
+	DIRS_REGEX="$(printf '%s\n' "${TERMUX_PACKAGE_DIRECTORIES[@]}" | paste -sd'|')" || exit 0
 
 	# fetch PR commit tree
 	mask_output git fetch origin "$PR_HEAD_COMMIT:ref/tmp/$PR_HEAD_COMMIT" || infoexit "failed to fetch PR head tree, not performing CI fast path"
@@ -172,13 +172,14 @@ readarray -t COMMITS < <(git rev-list --no-merges "$OLD_COMMIT..$HEAD_COMMIT" ||
 
 	# obtain list of all buildsystem files changed since this PR diverged
 	readarray -t PR_BASE_TO_HEAD_CHANGED_BUILDSYSTEM_FILES < <(
-		grep -e "^scripts/" -e "^ndk-patches/" -e "^build-package.sh$" <<< "${PR_BASE_TO_HEAD_CHANGED_FILES[@]}"
+		printf '%s\n' "${PR_BASE_TO_HEAD_CHANGED_FILES[@]}" \
+			| grep -e "^scripts/" -e "^ndk-patches/" -e "^build-package.sh$" -e "^\.github/workflows/"
 	) || :
 	echo "Buildsystem files changed since PR divergence: ${PR_BASE_TO_HEAD_CHANGED_BUILDSYSTEM_FILES[*]:-none}"
 
 	# obtain list of all packages changes since this PR diverged
 	readarray -t PR_BASE_TO_HEAD_CHANGED_PACKAGES < <(
-		echo "${PR_BASE_TO_HEAD_CHANGED_FILES[@]}" \
+		printf '%s\n' "${PR_BASE_TO_HEAD_CHANGED_FILES[@]}" \
 			| grep -E "^($DIRS_REGEX)/[^/]+/" \
 			| sed -E "s#^(($DIRS_REGEX)/[^/]+)/.*#\1#" \
 			| sort -u
@@ -198,18 +199,19 @@ readarray -t COMMITS < <(git rev-list --no-merges "$OLD_COMMIT..$HEAD_COMMIT" ||
 
 	# obtain the set of all build dependencies changed since this PR diverged
 	readarray -t PR_BASE_TO_HEAD_CHANGED_DEPS < <(
-		grep -Fx \
-			-f <(echo "${PR_BASE_TO_HEAD_CHANGED_PACKAGES[@]}") \
-			- <<< "${PR_CHANGED_PACKAGES_DEPS[@]}"
+		if (( ${#PR_BASE_TO_HEAD_CHANGED_PACKAGES[@]} && ${#PR_CHANGED_PACKAGES_DEPS[@]} )); then
+			printf '%s\n' "${PR_CHANGED_PACKAGES_DEPS[@]}" \
+				| grep -Fx -f <(printf '%s\n' "${PR_BASE_TO_HEAD_CHANGED_PACKAGES[@]}")
+		fi
 	) || :
 	echo "Dependencies of these packages changed since PR divergence: ${PR_BASE_TO_HEAD_CHANGED_DEPS[*]:-none}"
 
-	if (( ${#PR_BASE_TO_HEAD_CHANGED_BUILDSYSTEM_FILES[*]} + ${#PR_BASE_TO_HEAD_CHANGED_DEPS[*]} + PR_CI_REUSE )); then
+	if (( PR_CI_REUSE && ${#PR_BASE_TO_HEAD_CHANGED_BUILDSYSTEM_FILES[*]} == 0 && ${#PR_BASE_TO_HEAD_CHANGED_DEPS[*]} == 0 )); then
 
 		# The same commit can be used in more than one PR or even push
 		WORKFLOW_PR_QUERY="
 		query {
-			repository(owner: \"termux\", name: \"termux-packages\") {
+			repository(owner: \"fleet-47\", name: \"termux-packages\") {
 				object(oid: \"$PR_HEAD_COMMIT\") { ...workflowRun }
 			}
 		}
@@ -231,10 +233,11 @@ readarray -t COMMITS < <(git rev-list --no-merges "$OLD_COMMIT..$HEAD_COMMIT" ||
 				| .workflowRun.databaseId][0] // empty' <<< "$RESPONSE" || :
 		)"
 		if [[ -n "${WORKFLOW_ID}" ]]; then
-			echo "We can safely reuse CI artifacts from https://github.com/termux/termux-packages/actions/runs/${WORKFLOW_ID}"
+			echo "We can safely reuse CI artifacts from https://github.com/fleet-47/termux-packages/actions/runs/${WORKFLOW_ID}"
 			if download_ci_artifacts "${WORKFLOW_ID}"; then
 				# Notify CI about skipping packages building because we reuse PR artifact.
 				echo "skip-building=true" >> "${GITHUB_OUTPUT:-/dev/null}"
+				echo "reused-run-id=$WORKFLOW_ID" >> "${GITHUB_OUTPUT:-/dev/null}"
 				echo "::notice::Reusing PR #${PRS[0]} (workflow run ${WORKFLOW_ID}) build artifacts, building is skipped."
 			else
 				infoexit "Failed to download and unpack PR artifacts"
@@ -256,7 +259,7 @@ readarray -t COMMITS < <(git rev-list --no-merges "$OLD_COMMIT..$HEAD_COMMIT" ||
 	# to allow CI reuse artifacts of other PRs in the case if current PR diverged from another PR branch.
 	WORKFLOW_COMMITS_QUERY="
 	query {
-		repository(owner: \"termux\", name: \"termux-packages\") {
+		repository(owner: \"fleet-47\", name: \"termux-packages\") {
 		$(
 			for commit in "${COMMITS[@]}"; do
 				# Add a query for this commit with the shorthash as the label
@@ -288,7 +291,7 @@ readarray -t COMMITS < <(git rev-list --no-merges "$OLD_COMMIT..$HEAD_COMMIT" ||
 		[[ -z "${WORKFLOW_ID:-}" ]] || break
 	done
 	if [[ -n "${WORKFLOW_ID}" ]]; then
-		echo "We can safely reuse CI artifacts from https://github.com/termux/termux-packages/actions/runs/${WORKFLOW_ID}"
+		echo "We can safely reuse CI artifacts from https://github.com/fleet-47/termux-packages/actions/runs/${WORKFLOW_ID}"
 		echo "CI artifact URL is $(ci_artifact_url "${WORKFLOW_ID}" || infoexit "Failed to get CI artifact URL")"
 	else
 		echo "We can not reuse CI artifacts since no relevant CI runs were found"

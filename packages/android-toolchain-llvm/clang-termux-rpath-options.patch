@@ -1,0 +1,15 @@
+--- a/clang/include/clang/Options/Options.td
++++ b/clang/include/clang/Options/Options.td
+@@ -6606,6 +6606,12 @@
+   Visibility<[ClangOption, FlangOption]>;
+ def rtlib_EQ : Joined<["-", "--"], "rtlib=">, Visibility<[ClangOption, CLOption, FlangOption]>,
+   HelpText<"Compiler runtime library to use">;
++def ftermux_rpath : Flag<["-"], "ftermux-rpath">,
++  Flags<[NoArgumentUnused]>, Visibility<[ClangOption]>, Group<f_Group>,
++  HelpText<"Add the Termux library directory to the runtime search path (default)">;
++def fno_termux_rpath : Flag<["-"], "fno-termux-rpath">,
++  Flags<[NoArgumentUnused]>, Visibility<[ClangOption]>, Group<f_Group>,
++  HelpText<"Do not add the Termux library directory to the runtime search path">;
+ def frtlib_add_rpath: Flag<["-"], "frtlib-add-rpath">, Flags<[NoArgumentUnused]>,
+   Visibility<[ClangOption, FlangOption]>,
+   HelpText<"Add -rpath with architecture-specific resource directory to the linker flags. "

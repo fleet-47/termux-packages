@@ -1,0 +1,50 @@
+--- a/compiler-rt/CMakeLists.txt
++++ b/compiler-rt/CMakeLists.txt
+@@ -245,6 +245,9 @@
+     elseif (FUCHSIA)
+       set(${var}_LIBNAME "libc++")
+       set(${var}_INTREE 1)
++    elseif (ANDROID)
++      set(${var}_LIBNAME "libc++_shared")
++      set(${var}_SYSTEM 1)
+     else()
+       set(${var}_LIBNAME "libstdc++")
+       set(${var}_SYSTEM 1)
+@@ -260,7 +263,7 @@
+ # TODO: Mark this as internal flag, most users should use COMPILER_RT_CXX_LIBRARY.
+ set(SANITIZER_CXX_ABI "default" CACHE STRING
+     "Specify C++ ABI library to use.")
+-set(CXXABIS none default libstdc++ libc++ libcxxabi)
++set(CXXABIS none default libc++_shared libstdc++ libc++ libcxxabi)
+ set_property(CACHE SANITIZER_CXX_ABI PROPERTY STRINGS ;${CXXABIS})
+ handle_default_cxx_lib(SANITIZER_CXX_ABI)
+ 
+@@ -268,7 +271,7 @@
+ # TODO: Mark this as internal flag, most users should use COMPILER_RT_CXX_LIBRARY.
+ set(SANITIZER_TEST_CXX "default" CACHE STRING
+     "Specify C++ library to use for tests.")
+-set(CXXLIBS none default libstdc++ libc++)
++set(CXXLIBS none default libc++_shared libstdc++ libc++)
+ set_property(CACHE SANITIZER_TEST_CXX PROPERTY STRINGS ;${CXXLIBS})
+ handle_default_cxx_lib(SANITIZER_TEST_CXX)
+ 
+@@ -616,6 +619,10 @@
+ 
+ if (COMPILER_RT_USE_BUILTINS_LIBRARY)
+   string(REPLACE "-Wl,-z,defs" "" CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS}")
++  # Termux/NDK provides a static unwinder independently of compiler-rt.
++  if (ANDROID)
++    list(APPEND SANITIZER_COMMON_LINK_FLAGS -l:libunwind.a)
++  endif()
+ else()
+   if (ANDROID)
+     append_list_if(COMPILER_RT_HAS_GCC_LIB gcc SANITIZER_COMMON_LINK_LIBS)
+@@ -749,6 +756,8 @@
+   endif()
+ elseif (SANITIZER_CXX_ABI_LIBNAME STREQUAL "libcxxabi")
+   list(APPEND SANITIZER_CXX_ABI_LIBRARIES "c++abi")
++elseif (SANITIZER_CXX_ABI_LIBNAME STREQUAL "libc++_shared")
++  list(APPEND SANITIZER_CXX_ABI_LIBRARIES "c++_shared")
+ elseif (SANITIZER_CXX_ABI_LIBNAME STREQUAL "libstdc++")
+   append_list_if(COMPILER_RT_HAS_LIBSTDCXX stdc++ SANITIZER_CXX_ABI_LIBRARIES)
+ endif()

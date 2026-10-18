@@ -1,11 +1,9 @@
-name: Packages
+name: Android AArch64 toolchain
 
 on:
   push:
     branches:
-    - master
-    - dev
-    - 'dev/**'
+    - termux-toolchain
     paths:
     - 'packages/**'
     - 'root-packages/**'
@@ -20,10 +18,11 @@ on:
       packages:
         description: "A space-separated names of packages selected for rebuilding"
         required: true
+        default: android-toolchain-llvm rustc-nightly
       free-space:
         description: "Free space even if not building large package (useful when building a large number of packages)"
         type: boolean
-        default: false
+        default: true
 
 permissions: {} # none
 
@@ -37,16 +36,21 @@ jobs:
   build:
     permissions:
       contents: read # actions/upload-artifact doesn't need contents: write
+      actions: read
     runs-on: ubuntu-26.04
-    strategy:
-      matrix:
-        target_arch: [aarch64, arm, i686, x86_64]
-      fail-fast: false
+    env:
+      TERMUX_DOCKER_EXEC_EXTRA_ARGS: --env TERMUX_PKG_MAKE_PROCESSES=2
     steps:
     - name: Clone repository
       uses: actions/checkout@v7
       with:
         fetch-depth: 1000
+
+    - name: Prepare toolchain profile
+      run: |
+        cp scripts/android-toolchain.json android-toolchain.json
+        mkdir -p output
+        cp android-toolchain.json output/android-toolchain.json
 
     - name: Gather build summary
       id: build-info
@@ -91,7 +95,7 @@ jobs:
           exit 1
         fi
 
-        OLD_COMMIT="$OLD_COMMIT" HEAD_COMMIT="$HEAD_COMMIT" GITHUB_TOKEN="${{ secrets.GITHUB_TOKEN }}" scripts/utils/termux_reuse_pr_build_artifacts.sh "${{ github.event_name }}" "${{ matrix.target_arch }}" || true
+        OLD_COMMIT="$OLD_COMMIT" HEAD_COMMIT="$HEAD_COMMIT" GITHUB_TOKEN="${{ secrets.GITHUB_TOKEN }}" scripts/utils/termux_reuse_pr_build_artifacts.sh "${{ github.event_name }}" "aarch64" || true
 
         # A subpackage goes to the repository named by TERMUX_SUBPKG_REPO
         # (main, x11 or root), or to the repository of its parent package.
@@ -110,7 +114,7 @@ jobs:
           # Process tag '%ci:no-build' that may be added as line to commit message.
           # Forces CI to cancel current build with status 'passed'
           if grep -qiP '^\s*%ci:no-build\s*$' <(git log --format="%B" -n 1 --no-merges "HEAD"); then
-            tar cf artifacts/debs-${{ matrix.target_arch }}.tar debs
+            tar cf artifacts/debs-aarch64.tar debs
             echo "[!] Force exiting as tag '%ci:no-build' was applied to HEAD commit message."
             exit 0
           fi
@@ -203,7 +207,7 @@ jobs:
           skip_building=true
         elif [[ "${#packages[@]}" -gt 0 ]]; then
           set +e
-          DRY_RUN_OUTPUT=$(./scripts/bin/build-package-dry-run-simulation.sh -I -C -a "${{ matrix.target_arch }}" "${packages[@]}" 2>&1)
+          DRY_RUN_OUTPUT=$(./scripts/bin/build-package-dry-run-simulation.sh -I -C -a "aarch64" "${packages[@]}" 2>&1)
           DRY_RUN_RC=$?
           set -e
           echo "$DRY_RUN_OUTPUT"
@@ -240,6 +244,16 @@ jobs:
           fi
         fi
         echo "needs-docker-build=$needs_docker_build" >> $GITHUB_OUTPUT
+
+    - name: Fetch reused upstream test inputs
+      if: ${{ steps.build-info.outputs.reused-run-id != '' }}
+      uses: actions/download-artifact@v8
+      with:
+        name: android-aarch64-toolchain
+        path: output
+        repository: fleet-47/termux-packages
+        run-id: ${{ steps.build-info.outputs.reused-run-id }}
+        github-token: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Lint packages
       run: |
@@ -304,6 +318,7 @@ jobs:
     - name: Build packages
       if: ${{ steps.build-info.outputs.skip-building != 'true' }}
       run: |
+        set -o pipefail
         declare -a packages=()
         for repo_path in $(jq --raw-output 'del(.pkg_format) | keys | .[]' repo.json); do
           repo=$(jq --raw-output '.["'${repo_path}'"].name' repo.json)
@@ -315,8 +330,43 @@ jobs:
         echo "packages: ${packages[*]}"
 
         if [[ "${#packages[@]}" -gt 0 ]]; then
-          ./scripts/run-docker.sh -d ./build-package.sh -I -C -a "${{ matrix.target_arch }}" "${packages[@]}"
+          ./scripts/run-docker.sh -d ./build-package.sh -I -C -a "aarch64" "${packages[@]}" 2>&1 \
+            | tee output/android-toolchain-build.log
         fi
+
+    - name: Collect build diagnostics
+      if: always()
+      shell: bash
+      run: |
+        mkdir -p output/android-toolchain-diagnostics
+        if docker container inspect termux-package-builder > /dev/null 2>&1; then
+          docker exec termux-package-builder bash -euo pipefail -c '
+            cd /home/builder/.termux-build
+            roots=()
+            for package in android-toolchain-llvm rustc-nightly; do
+              if [[ -d "$package" ]]; then roots+=("$package"); fi
+            done
+            if [[ "${#roots[@]}" -gt 0 ]]; then
+              find "${roots[@]}" -type d \( -name src -o -name .git \) -prune -o \
+                -type f \( -name CMakeCache.txt -o -name CMakeConfigureLog.yaml \
+                -o -name CMakeError.log -o -name CMakeOutput.log \) -print0 \
+                | tar --null -czf - --files-from=-
+            else
+              tar -czf - --files-from=/dev/null
+            fi
+          ' > output/android-toolchain-diagnostics/cmake-diagnostics.tar.gz
+        else
+          echo "Builder container was not created." > output/android-toolchain-diagnostics/container.txt
+        fi
+
+    - name: Store build diagnostics
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: android-aarch64-build-diagnostics
+        path: |
+          output/android-toolchain-build.log
+          output/android-toolchain-diagnostics/
 
     - name: Generate build artifacts
       if: always()
@@ -336,34 +386,54 @@ jobs:
           if [ -f "./debs/built_${repo}_packages.txt" ] && [ -d "output" ]; then
             while read -r pkg; do
               # Match both $pkg.deb and $pkg-static.deb.
-              find output \( -name "$pkg_*.deb" -o -name "$pkg-static_*.deb" \) -type f -print0 | xargs -0r mv -t debs/
+              find output \( -name "${pkg}_*.deb" -o -name "${pkg}-static_*.deb" \) -type f -print0 | xargs -0r mv -t debs/
             done < <(cat "./debs/built_${repo}_packages.txt")
           fi
         done
 
+        # Rust-only builds must test the freshly built LLVM dependency too.
+        if compgen -G 'debs/rustc-nightly_*_aarch64.deb' > /dev/null &&
+           ! compgen -G 'debs/android-toolchain-llvm_*_aarch64.deb' > /dev/null; then
+          shopt -s nullglob
+          llvm_dependencies=(output/android-toolchain-llvm_*_aarch64.deb)
+          [[ "${#llvm_dependencies[@]}" -eq 1 ]]
+          mv "${llvm_dependencies[0]}" debs/
+          shopt -u nullglob
+        fi
+
         # Files containing certain symbols (e.g. ":") will cause failure in actions/upload-artifact.
         # Archiving *.deb files in a tarball to avoid issues with uploading.
-        tar cf artifacts/debs-${{ matrix.target_arch }}-${{ github.sha }}.tar debs
+        tar cf artifacts/debs-aarch64-${{ github.sha }}.tar debs
     - name: Checksums for built *.deb files
       if: always()
       run: |
-        find debs -type f -name "*.deb" -exec sha256sum "{}" \; | sort -k2 | tee checksum-${{ matrix.target_arch }}-${{ github.sha }}.txt
+        find debs -type f -name "*.deb" -exec sha256sum "{}" \; | sort -k2 | tee checksum-aarch64-${{ github.sha }}.txt
     - name: Store checksums for built *.deb files
       if: always()
       uses: actions/upload-artifact@v7
       with:
-        name: checksum-${{ matrix.target_arch }}-${{ github.sha }}
-        path: checksum-${{ matrix.target_arch }}-${{ github.sha }}.txt
+        name: checksum-aarch64-${{ github.sha }}
+        path: checksum-aarch64-${{ github.sha }}.txt
     - name: Store *.deb files
       if: always()
       uses: actions/upload-artifact@v7
       with:
-        name: debs-${{ matrix.target_arch }}-${{ github.sha }}
+        name: debs-aarch64-${{ github.sha }}
         path: ./artifacts
     - name: AppArmor Logs
       if: always()
       run: |
         sudo dmesg | grep apparmor
+
+    - name: Store upstream test inputs
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: android-aarch64-toolchain
+        path: |
+          output/android-toolchain-build-support/
+          output/android-toolchain.json
+        compression-level: 0
 
   test-buildorder-random:
     permissions:
@@ -378,23 +448,10 @@ jobs:
       env:
         TERMUX_ARCH: aarch64
       run: ./scripts/bin/test-buildorder-random
-    - name: Randomise buildorder.py test (arm)
-      env:
-        TERMUX_ARCH: arm
-      run: ./scripts/bin/test-buildorder-random
-    - name: Randomise buildorder.py test (i686)
-      env:
-        TERMUX_ARCH: i686
-      run: ./scripts/bin/test-buildorder-random
-    - name: Randomise buildorder.py test (x86_64)
-      env:
-        TERMUX_ARCH: x86_64
-      run: ./scripts/bin/test-buildorder-random
 
   upload-test:
     permissions:
       contents: read
-    if: github.repository == 'termux/termux-packages' && github.ref != 'refs/heads/master'
     needs: build
     runs-on: ubuntu-slim
     steps:
@@ -417,7 +474,7 @@ jobs:
           fi
         fi
 
-        for archive in debs-*/debs-{aarch64,arm,i686,x86_64}-${{ github.sha }}.tar; do
+        for archive in debs-*/debs-aarch64-${{ github.sha }}.tar; do
           tar xf "$archive"
         done
 
@@ -449,7 +506,7 @@ jobs:
       run: |
         source scripts/aptly_api.sh
 
-        for archive in debs-*/debs-{aarch64,arm,i686,x86_64}-${{ github.sha }}.tar; do
+        for archive in debs-*/debs-aarch64-${{ github.sha }}.tar; do
           tar xf "$archive"
         done
 
@@ -495,3 +552,145 @@ jobs:
             fi
           fi
         done
+
+  upstream-tests:
+    permissions:
+      contents: read
+    needs: [build, upload-test]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: android-aarch64-toolchain
+          path: output
+      - uses: actions/download-artifact@v8
+        with:
+          name: debs-aarch64-${{ github.sha }}
+          path: package-artifacts
+      - name: Extract upstream test inputs
+        id: test-inputs
+        shell: bash
+        run: |
+          tar -xf package-artifacts/debs-aarch64-${{ github.sha }}.tar --strip-components=1 -C output
+          llvm=false
+          rust=false
+          llvm_selected=false
+          for package_list in output/built_*_packages.txt; do
+            if [[ -f "$package_list" ]] && grep -qx android-toolchain-llvm "$package_list"; then
+              llvm_selected=true
+            fi
+          done
+          if compgen -G 'output/android-toolchain-llvm_*_aarch64.deb' > /dev/null; then
+            (cd output/android-toolchain-build-support && sha256sum -c llvm-support.sha256)
+          fi
+          if [[ "$llvm_selected" == true ]]; then
+            compgen -G 'output/android-toolchain-llvm_*_aarch64.deb' > /dev/null
+            llvm=true
+            mkdir -p runtime-root
+            tar --zstd -xf output/android-toolchain-build-support/llvm-tests.tar.zst -C runtime-root
+            test -s output/android-toolchain-build-support/llvm-test-paths
+          fi
+          if compgen -G 'output/rustc-nightly_*_aarch64.deb' > /dev/null; then
+            rust=true
+            (cd output/android-toolchain-build-support && sha256sum -c rust-support.sha256)
+            mkdir -p runtime-root/rust-source runtime-root/rust-test-work
+            tar -xJf output/android-toolchain-build-support/rust-source.tar.xz -C runtime-root/rust-source
+          fi
+          echo "llvm=$llvm" >> "$GITHUB_OUTPUT"
+          echo "rust=$rust" >> "$GITHUB_OUTPUT"
+          if [[ "$llvm" == true || "$rust" == true ]]; then
+            mkdir -p runtime-root/home/builder runtime-root/rust-source runtime-root/rust-test-work runtime-root/runtime-gate
+            sudo chown -R 1000:1000 runtime-root
+          fi
+      - name: Run upstream suites in AArch64 Termux
+        if: steps.test-inputs.outputs.llvm == 'true' || steps.test-inputs.outputs.rust == 'true'
+        env:
+          TEST_LLVM: ${{ steps.test-inputs.outputs.llvm }}
+          TEST_RUST: ${{ steps.test-inputs.outputs.rust }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull termux/termux-docker:aarch64
+          docker image inspect termux/termux-docker:aarch64 --format '{{index .RepoDigests 0}}' > runtime-image.txt
+          docker run --rm --platform linux/arm64 \
+            --env TEST_LLVM --env TEST_RUST --env TOOLCHAIN_RUNTIME_LOG_DIR=/runtime-gate \
+            --volume "$PWD:/workspace:ro" \
+            --volume "$PWD/runtime-root/home/builder:/home/builder" \
+            --volume "$PWD/runtime-root/rust-source:/rust-source" \
+            --volume "$PWD/runtime-root/rust-test-work:/data/local/tmp/work" \
+            --volume "$PWD/runtime-root/runtime-gate:/runtime-gate" \
+            --workdir /workspace termux/termux-docker:aarch64 \
+            bash -euo pipefail -c '
+              pkg update -y
+              pkg install -y python cmake ninja make pkg-config git perl jq zstd xz-utils \
+                ndk-sysroot ndk-multilib libcompiler-rt libc++ libandroid-execinfo openssl zlib \
+                gdb nodejs diffutils findutils coreutils file binutils
+              mapfile -t llvm_packages < <(compgen -G "./output/android-toolchain-llvm_*_aarch64.deb")
+              [[ "${#llvm_packages[@]}" -eq 1 ]]
+              apt install -y "${llvm_packages[@]}"
+              if [[ "$TEST_RUST" == true ]]; then
+                apt install -y ./output/rustc-nightly_*_aarch64.deb \
+                  ./output/rust-nightly-std-aarch64-linux-android_*_aarch64.deb \
+                  ./output/rust-src-nightly_*_all.deb
+              fi
+              metadata="$PREFIX/opt/android-toolchain-llvm/share/android-toolchain-runtime"
+              support=/workspace/output/android-toolchain-build-support
+              for name in llvm-resources.sha256 llvm-link-runtimes.sha256; do
+                test -s "$metadata/$name"
+                if [[ -f "$support/$name" ]]; then cmp "$support/$name" "$metadata/$name"; fi
+                (cd "$PREFIX" && sha256sum -c "$metadata/$name")
+              done
+              if [[ "$TEST_RUST" == true ]]; then
+                test -s "$support/rust-link-runtimes.sha256"
+                (cd "$PREFIX" && sha256sum -c "$support/rust-link-runtimes.sha256")
+              fi
+              binaries=("$PREFIX/opt/android-toolchain-llvm/bin/clang"
+                        "$PREFIX/opt/android-toolchain-llvm/bin/ld.lld")
+              library_dirs=("$PREFIX/opt/android-toolchain-llvm/lib")
+              if [[ -f "$support/llvm-build-info.txt" ]]; then cat "$support/llvm-build-info.txt"; fi
+              if [[ "$TEST_RUST" == true ]]; then
+                binaries+=("$PREFIX/opt/rust-nightly/bin/rustc"
+                           "$PREFIX/opt/rust-nightly/bin/cargo"
+                           "$PREFIX/opt/rust-nightly/bin/rustdoc")
+                library_dirs+=("$PREFIX/opt/rust-nightly/lib")
+                cat output/android-toolchain-build-support/rust-build-info.txt
+              fi
+              for library_dir in "${library_dirs[@]}"; do
+                find "$library_dir" -type f \( -name "*.so" -o -name "*.so.*" \) -print0 > "$TMPDIR/toolchain-shared-libraries"
+                while IFS= read -r -d "" library; do
+                  binaries+=("$library")
+                done < "$TMPDIR/toolchain-shared-libraries"
+              done
+              for binary in "${binaries[@]}"; do
+                file "$binary"
+                readelf -W -h -l -d "$binary"
+              done
+              bash packages/android-toolchain-llvm/run-upstream-tests.sh \
+                --runtime-only /workspace/output/android-toolchain.json
+              status=0
+              if [[ "$TEST_LLVM" == true ]]; then
+                bash packages/android-toolchain-llvm/run-upstream-tests.sh \
+                  /workspace/output/android-toolchain-build-support/llvm-test-paths || status=1
+              fi
+              if [[ "$TEST_RUST" == true ]]; then
+                bash packages/rustc-nightly/run-upstream-tests.sh \
+                  /rust-source /workspace/output/android-toolchain.json 2 || status=1
+              fi
+              exit "$status"
+            ' 2>&1 | tee upstream-tests.log
+      - name: Upload upstream test output
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: android-aarch64-upstream-tests
+          path: |
+            upstream-tests.log
+            runtime-image.txt
+            runtime-root/runtime-gate/*.log
+            runtime-root/runtime-gate/*.txt
+            runtime-root/runtime-gate/*.profraw
+            runtime-root/runtime-gate/*.profdata

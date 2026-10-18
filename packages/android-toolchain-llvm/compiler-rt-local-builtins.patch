@@ -1,0 +1,19 @@
+--- a/compiler-rt/cmake/Modules/AddCompilerRT.cmake
++++ b/compiler-rt/cmake/Modules/AddCompilerRT.cmake
+@@ -278,11 +278,12 @@
+       endif()
+       if(COMPILER_RT_USE_BUILTINS_LIBRARY AND NOT type STREQUAL "OBJECT" AND
+          NOT name STREQUAL "clang_rt.builtins")
+-        get_compiler_rt_target(${arch} target)
+-        find_compiler_rt_library(builtins builtins_${libname} TARGET ${target})
+-        if(builtins_${libname} STREQUAL "NOTFOUND")
+-          message(FATAL_ERROR "Cannot find builtins library for the target architecture")
++        # This package builds builtins from the same source revision. Do not
++        # discover an older archive through the bootstrap compiler's resources.
++        if(NOT TARGET clang_rt.builtins-${arch})
++          message(FATAL_ERROR "Missing builtins target from this compiler-rt build")
+         endif()
++        set(builtins_${libname} clang_rt.builtins-${arch})
+       endif()
+       set(sources_${libname} ${LIB_SOURCES})
+       format_object_libs(sources_${libname} ${arch} ${LIB_OBJECT_LIBS})

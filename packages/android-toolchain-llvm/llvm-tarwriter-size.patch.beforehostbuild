@@ -1,0 +1,60 @@
+--- a/llvm/lib/Support/TarWriter.cpp
++++ b/llvm/lib/Support/TarWriter.cpp
+@@ -23,6 +23,7 @@
+ 
+ #include "llvm/Support/TarWriter.h"
+ #include "llvm/ADT/StringRef.h"
++#include "llvm/Support/ErrorHandling.h"
+ #include "llvm/Support/FileSystem.h"
+ #include "llvm/Support/MathExtras.h"
+ #include "llvm/Support/Path.h"
+@@ -68,11 +69,11 @@
+ //
+ // This function create such string.
+ static std::string formatPax(StringRef Key, StringRef Val) {
+-  int Len = Key.size() + Val.size() + 3; // +3 for " ", "=" and "\n"
++  size_t Len = Key.size() + Val.size() + 3; // +3 for " ", "=" and "\n"
+ 
+   // We need to compute total size twice because appending
+   // a length field could change total size by one.
+-  int Total = Len + Twine(Len).str().size();
++  size_t Total = Len + Twine(Len).str().size();
+   Total = Len + Twine(Total).str().size();
+   return (Twine(Total) + " " + Key + "=" + Val + "\n").str();
+ }
+@@ -97,6 +98,17 @@
+   snprintf(Hdr.Checksum, sizeof(Hdr.Checksum), "%06o", Chksum);
+ }
+ 
++// Ustar stores sizes as eleven octal digits followed by a null byte.
++static void writeTarSize(char (&Field)[12], size_t Size) {
++  if (Size > 077777777777ULL)
++    report_fatal_error("file too large for Ustar size field");
++  for (size_t I = 0; I < sizeof(Field) - 1; ++I) {
++    Field[sizeof(Field) - 2 - I] = static_cast<char>('0' + (Size & 7));
++    Size >>= 3;
++  }
++  Field[sizeof(Field) - 1] = '\0';
++}
++
+ // Create a tar header and write it to a given output stream.
+ static void writePaxHeader(raw_fd_ostream &OS, StringRef Path) {
+   // A PAX header consists of a 512-byte header followed
+@@ -105,7 +117,7 @@
+ 
+   // Create a 512-byte header.
+   UstarHeader Hdr = makeUstarHeader();
+-  snprintf(Hdr.Size, sizeof(Hdr.Size), "%011zo", PaxAttr.size());
++  writeTarSize(Hdr.Size, PaxAttr.size());
+   Hdr.TypeFlag = 'x'; // PAX magic
+   computeChecksum(Hdr);
+ 
+@@ -159,7 +171,7 @@
+   UstarHeader Hdr = makeUstarHeader();
+   memcpy(Hdr.Name, Name.data(), Name.size());
+   memcpy(Hdr.Mode, "0000664", 8);
+-  snprintf(Hdr.Size, sizeof(Hdr.Size), "%011zo", Size);
++  writeTarSize(Hdr.Size, Size);
+   memcpy(Hdr.Prefix, Prefix.data(), Prefix.size());
+   computeChecksum(Hdr);
+   OS << StringRef(reinterpret_cast<char *>(&Hdr), sizeof(Hdr));

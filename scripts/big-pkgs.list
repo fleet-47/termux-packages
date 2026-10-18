@@ -48,3 +48,5 @@ wine-stable
 zed
 zen-browser
 zig
+android-toolchain-llvm
+rustc-nightly

@@ -1,0 +1,17 @@
+--- a/llvm/cmake/modules/HandleLLVMOptions.cmake
++++ b/llvm/cmake/modules/HandleLLVMOptions.cmake
+@@ -942,8 +942,14 @@
+   # line is also a // comment.
+   set(OLD_CMAKE_REQUIRED_FLAGS ${CMAKE_REQUIRED_FLAGS})
+   set(CMAKE_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS} -Werror -Wcomment")
++  # The probe source relies on legacy macro backslash expansion.
++  cmake_policy(PUSH)
++  if(POLICY CMP0219)
++    cmake_policy(SET CMP0219 OLD)
++  endif()
+   CHECK_C_SOURCE_COMPILES("// \\\\\\n//\\nint main(void) {return 0;}"
+                           C_WCOMMENT_ALLOWS_LINE_WRAP)
++  cmake_policy(POP)
+   set(CMAKE_REQUIRED_FLAGS ${OLD_CMAKE_REQUIRED_FLAGS})
+   if (NOT C_WCOMMENT_ALLOWS_LINE_WRAP)
+     append("-Wno-comment" CMAKE_C_FLAGS CMAKE_CXX_FLAGS)

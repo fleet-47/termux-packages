@@ -1,0 +1,32 @@
+--- a/clang/lib/Driver/ToolChains/Gnu.cpp
++++ b/clang/lib/Driver/ToolChains/Gnu.cpp
+@@ -168,7 +168,9 @@
+ 
+   const std::string &customGCCName = D.getCCCGenericGCCName();
+   const char *GCCName;
+-  if (!customGCCName.empty())
++  if (getToolChain().getTriple().isAndroid())
++    GCCName = "@TERMUX_PREFIX@/bin/false";
++  else if (!customGCCName.empty())
+     GCCName = customGCCName.c_str();
+   else if (D.CCCIsCXX()) {
+     GCCName = "g++";
+@@ -466,7 +468,8 @@
+       if (OnlyLibstdcxxStatic)
+         CmdArgs.push_back("-Bdynamic");
+     }
+-    CmdArgs.push_back("-lm");
++    if (!isAndroid)
++      CmdArgs.push_back("-lm");
+   }
+ 
+   // Silence warnings when linking C code with a C++ '-stdlib' argument.
+@@ -511,6 +514,8 @@
+         WantPthread = true;
+ 
+       AddRunTimeLibs(ToolChain, D, CmdArgs, Args);
++      if (isAndroid && D.CCCIsCXX())
++        CmdArgs.push_back("-lm");
+ 
+       // LLVM support for atomics on 32-bit SPARC V8+ is incomplete, so
+       // forcibly link with libatomic as a workaround.
